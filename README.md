@@ -188,3 +188,5 @@ BlackTape follows these non-negotiable principles:
 ## License
 
 MIT
+
+MIT License - Feel free to use and modify this project.
