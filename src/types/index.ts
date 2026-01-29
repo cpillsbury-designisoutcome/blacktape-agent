@@ -195,7 +195,7 @@ export interface AnalysisSession {
 export interface AnalyzeRequest {
   userInput: string;
   existingAnalysis?: Analysis;
-  action: 'new' | 'refine' | 'scenario' | 'question';
+  action: 'new' | 'deep-analysis' | 'refine' | 'scenario' | 'question';
   additionalContext?: string;
 }
 
