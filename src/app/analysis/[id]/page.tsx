@@ -130,9 +130,14 @@ export default function AnalysisPage() {
     };
   }, [id, fetchSession]);
 
+  // Only auto-scroll the chat container (not the whole page) when the user is chatting
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+    if (!chatEndRef.current) return;
+    // Only scroll when actively streaming a chat response or when a new user message is added
+    if (isStreaming || streamingContent) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [messages, streamingContent, isStreaming]);
 
   const handleChat = async (e: React.FormEvent) => {
     e.preventDefault();
