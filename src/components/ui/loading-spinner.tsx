@@ -1,6 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
+import { ALL_SECTIONS, SECTION_LABELS, type AnalysisSection } from '@/lib/progressive-parser';
 
 interface LoadingSpinnerProps {
   size?: 'sm' | 'md' | 'lg';
@@ -24,14 +25,12 @@ export function LoadingSpinner({
   return (
     <div className={cn('flex flex-col items-center justify-center gap-4', className)}>
       <div className="relative">
-        {/* Outer ring */}
         <div
           className={cn(
             'rounded-full border-4 border-blacktape-200',
             sizeClasses[size]
           )}
         />
-        {/* Spinning arc */}
         <div
           className={cn(
             'absolute top-0 left-0 rounded-full border-4 border-transparent border-t-blacktape-700 animate-spin',
@@ -53,15 +52,17 @@ export function LoadingSpinner({
 
 interface AnalysisLoadingProps {
   className?: string;
+  completedSections?: Set<AnalysisSection>;
 }
 
-export function AnalysisLoading({ className }: AnalysisLoadingProps) {
-  const steps = [
-    'Understanding your plan...',
-    'Identifying risks and dependencies...',
-    'Generating scenarios...',
-    'Building recommendations...',
-  ];
+export function AnalysisLoading({ className, completedSections }: AnalysisLoadingProps) {
+  const completed = completedSections || new Set<AnalysisSection>();
+  const completedCount = completed.size;
+  const totalCount = ALL_SECTIONS.length;
+  const hasStarted = completedCount > 0;
+
+  // Find current section being worked on
+  const currentSection = ALL_SECTIONS.find((s) => !completed.has(s));
 
   return (
     <div className={cn('flex flex-col items-center justify-center py-12', className)}>
@@ -97,28 +98,62 @@ export function AnalysisLoading({ className }: AnalysisLoadingProps) {
         Analyzing Your Plan
       </h3>
       <p className="text-blacktape-600 text-center max-w-md mb-6">
-        BlackTape is stress-testing your plan across cost, timeline, compliance,
-        consensus, and execution dimensions.
+        {hasStarted && currentSection
+          ? `${SECTION_LABELS[currentSection]}...`
+          : 'BlackTape is stress-testing your plan across cost, timeline, compliance, consensus, and execution dimensions.'}
       </p>
 
-      {/* Animated steps */}
-      <div className="space-y-2">
-        {steps.map((step, index) => (
-          <div
-            key={step}
-            className="flex items-center gap-2 text-sm text-blacktape-500 animate-pulse"
-            style={{ animationDelay: `${index * 0.5}s` }}
-          >
-            <div className="w-1.5 h-1.5 bg-blacktape-400 rounded-full" />
-            {step}
+      {/* Progress bar */}
+      {hasStarted && (
+        <div className="w-full max-w-xs mb-6">
+          <div className="h-2 bg-blacktape-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blacktape-700 rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${(completedCount / totalCount) * 100}%` }}
+            />
           </div>
-        ))}
-      </div>
+          <p className="text-xs text-blacktape-500 mt-1 text-center">
+            {completedCount} of {totalCount} sections complete
+          </p>
+        </div>
+      )}
 
-      {/* Time estimate */}
-      <p className="text-xs text-blacktape-400 mt-8">
-        This typically takes 1-2 minutes for comprehensive analysis
-      </p>
+      {/* Section status list */}
+      <div className="space-y-1.5 w-full max-w-xs">
+        {ALL_SECTIONS.map((section) => {
+          const isCompleted = completed.has(section);
+          const isCurrent = section === currentSection && hasStarted;
+
+          return (
+            <div
+              key={section}
+              className={cn(
+                'flex items-center gap-2 text-sm transition-all duration-300',
+                isCompleted
+                  ? 'text-blacktape-800'
+                  : isCurrent
+                  ? 'text-blacktape-700'
+                  : 'text-blacktape-400'
+              )}
+            >
+              {isCompleted ? (
+                <svg className="w-4 h-4 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : isCurrent ? (
+                <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center">
+                  <div className="w-3 h-3 border-2 border-blacktape-600 border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center">
+                  <div className="w-1.5 h-1.5 bg-blacktape-300 rounded-full" />
+                </div>
+              )}
+              {SECTION_LABELS[section]}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

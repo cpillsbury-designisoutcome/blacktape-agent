@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzeWithStructuredOutput } from '@/lib/anthropic';
+import { streamAnalysis } from '@/lib/anthropic';
 import {
   createAnalysis,
   saveSession,
@@ -8,7 +8,8 @@ import {
   addMessage,
   mergeAnalysisUpdate,
 } from '@/lib/storage';
-import type { AnalyzeRequest, AnalysisSession } from '@/types';
+import { parseProgressiveSections } from '@/lib/progressive-parser';
+import type { AnalyzeRequest, AnalysisSession, Analysis } from '@/types';
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,7 +26,6 @@ export async function POST(request: NextRequest) {
     let session: AnalysisSession;
 
     if (analysisId && action !== 'new') {
-      // Continue existing session
       const existingSession = getSession(analysisId);
       if (!existingSession) {
         return NextResponse.json(
@@ -35,7 +35,6 @@ export async function POST(request: NextRequest) {
       }
       session = existingSession;
     } else {
-      // Create new session
       const analysis = createAnalysis(userInput);
       session = {
         analysis,
@@ -53,43 +52,112 @@ export async function POST(request: NextRequest) {
     // Update status to in_progress
     updateAnalysis(session.analysis.id, { status: 'in_progress' });
 
-    // Call the AI
-    const response = await analyzeWithStructuredOutput(
-      {
-        userInput: userInput || '',
-        action,
-        additionalContext,
-        existingAnalysis: session.analysis,
-      },
-      session.messages
-    );
+    const encoder = new TextEncoder();
+    let accumulated = '';
+    const completedSections = new Set<string>();
 
-    // Add assistant message
-    addMessage(session.analysis.id, {
-      role: 'assistant',
-      content: response.content,
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          // Send the analysis ID immediately so the client can redirect
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ analysisId: session.analysis.id })}\n\n`)
+          );
+
+          await streamAnalysis(
+            {
+              userInput: userInput || '',
+              action,
+              additionalContext,
+              existingAnalysis: session.analysis,
+            },
+            session.messages,
+            (chunk) => {
+              accumulated += chunk;
+
+              // Send raw chunk for "thinking" display
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ chunk })}\n\n`)
+              );
+
+              // Try to parse completed sections
+              const parseResult = parseProgressiveSections(accumulated, completedSections);
+              if (parseResult.newSections.length > 0) {
+                for (const sectionKey of parseResult.newSections) {
+                  completedSections.add(sectionKey);
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        section: sectionKey,
+                        data: parseResult.completedSections[sectionKey],
+                      })}\n\n`
+                    )
+                  );
+                }
+
+                // Progressively merge into storage
+                const partialUpdate: Partial<Analysis> = {};
+                for (const key of parseResult.newSections) {
+                  (partialUpdate as Record<string, unknown>)[key] = parseResult.completedSections[key];
+                }
+                const updated = mergeAnalysisUpdate(session.analysis, partialUpdate);
+                updateAnalysis(session.analysis.id, updated);
+                session.analysis = updated;
+              }
+            },
+            { useStructuredOutput: action === 'new' }
+          );
+
+          // Add assistant message
+          addMessage(session.analysis.id, {
+            role: 'assistant',
+            content: accumulated,
+          });
+
+          // Final parse to catch any remaining sections
+          const finalParse = parseProgressiveSections(accumulated, completedSections);
+          if (finalParse.newSections.length > 0) {
+            for (const sectionKey of finalParse.newSections) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    section: sectionKey,
+                    data: finalParse.completedSections[sectionKey],
+                  })}\n\n`
+                )
+              );
+            }
+            const partialUpdate: Partial<Analysis> = {};
+            for (const key of finalParse.newSections) {
+              (partialUpdate as Record<string, unknown>)[key] = finalParse.completedSections[key];
+            }
+            const updated = mergeAnalysisUpdate(session.analysis, partialUpdate);
+            updateAnalysis(session.analysis.id, updated);
+          }
+
+          // Update status to completed
+          updateAnalysis(session.analysis.id, { status: 'completed' });
+
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`)
+          );
+          controller.close();
+        } catch (error) {
+          console.error('Streaming analysis error:', error);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ error: 'Analysis streaming failed' })}\n\n`)
+          );
+          controller.close();
+        }
+      },
     });
 
-    // Merge structured analysis if available
-    if (response.structuredAnalysis) {
-      const updatedAnalysis = mergeAnalysisUpdate(
-        session.analysis,
-        response.structuredAnalysis
-      );
-      updateAnalysis(session.analysis.id, updatedAnalysis);
-      session.analysis = updatedAnalysis;
-    }
-
-    // Update status to completed
-    updateAnalysis(session.analysis.id, { status: 'completed' });
-
-    // Refresh session from storage
-    const updatedSession = getSession(session.analysis.id);
-
-    return NextResponse.json({
-      analysis: updatedSession?.analysis,
-      message: response.content,
-      structuredAnalysis: response.structuredAnalysis,
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
     });
   } catch (error) {
     console.error('Analysis error:', error);

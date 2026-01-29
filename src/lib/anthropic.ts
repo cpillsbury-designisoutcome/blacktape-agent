@@ -272,7 +272,8 @@ Return the JSON analysis first, wrapped in <analysis_json> tags, then provide yo
 export async function streamAnalysis(
   request: AnalyzeRequest,
   previousMessages: ChatMessage[] = [],
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  options?: { useStructuredOutput?: boolean }
 ): Promise<void> {
   const messages: Anthropic.MessageParam[] = [];
 
@@ -286,7 +287,16 @@ export async function streamAnalysis(
   let userContent = '';
   switch (request.action) {
     case 'new':
-      userContent = `Please analyze the following plan/idea and provide a complete stress-test analysis:\n\n${request.userInput}`;
+      if (options?.useStructuredOutput) {
+        userContent = `Please analyze the following plan/idea and provide a complete stress-test analysis. Return your analysis as a JSON object matching the schema provided, followed by any additional narrative commentary.
+
+Plan/Idea to analyze:
+${request.userInput}
+
+Return the JSON analysis first, wrapped in <analysis_json> tags, then provide your narrative commentary.`;
+      } else {
+        userContent = `Please analyze the following plan/idea and provide a complete stress-test analysis:\n\n${request.userInput}`;
+      }
       break;
     case 'refine':
       userContent = `Based on the current analysis, please refine with this additional information:\n\n${request.additionalContext || request.userInput}`;
@@ -304,10 +314,15 @@ export async function streamAnalysis(
     content: userContent,
   });
 
+  let systemPrompt = BLACKTAPE_SYSTEM_PROMPT;
+  if (options?.useStructuredOutput) {
+    systemPrompt = `${BLACKTAPE_SYSTEM_PROMPT}\n\n---\n\n## STRUCTURED OUTPUT REQUIREMENT\n\nReturn a JSON object matching this schema:\n\n${JSON.stringify(ANALYSIS_OUTPUT_SCHEMA, null, 2)}\n\nWrap the JSON in <analysis_json></analysis_json> tags.`;
+  }
+
   const stream = anthropic.messages.stream({
     model: MODEL,
     max_tokens: 16384,
-    system: BLACKTAPE_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages,
   });
 

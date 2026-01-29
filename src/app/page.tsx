@@ -1,17 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { AnalysisLoading } from '@/components/ui/loading-spinner';
+import { SECTION_LABELS, type AnalysisSection } from '@/lib/progressive-parser';
 
 export default function Dashboard() {
   const router = useRouter();
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [completedSections, setCompletedSections] = useState<Set<AnalysisSection>>(new Set());
+  const abortRef = useRef<AbortController | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,6 +22,9 @@ export default function Dashboard() {
 
     setIsLoading(true);
     setError(null);
+    setCompletedSections(new Set());
+
+    abortRef.current = new AbortController();
 
     try {
       const response = await fetch('/api/analyze', {
@@ -28,18 +34,71 @@ export default function Dashboard() {
           userInput: input,
           action: 'new',
         }),
+        signal: abortRef.current.signal,
       });
 
       if (!response.ok) {
         throw new Error('Failed to start analysis');
       }
 
-      const data = await response.json();
-      if (!data.analysis?.id) {
-        throw new Error('No analysis ID in response');
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let redirected = false;
+      let analysisId: string | null = null;
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n').filter((line) => line.startsWith('data: '));
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              // Capture analysis ID from first event
+              if (data.analysisId && !analysisId) {
+                analysisId = data.analysisId;
+              }
+
+              // When we get the first section, redirect to the analysis page
+              if (data.section && analysisId && !redirected) {
+                redirected = true;
+                router.push(`/analysis/${analysisId}`);
+                // Don't break - let the stream continue in background
+                // The analysis page will pick up via its own SSE or polling
+              }
+
+              if (data.section) {
+                setCompletedSections((prev) => {
+                  const next = new Set(Array.from(prev));
+                  next.add(data.section as AnalysisSection);
+                  return next;
+                });
+              }
+
+              if (data.error) {
+                throw new Error(data.error);
+              }
+            } catch (parseErr) {
+              // Skip malformed SSE lines
+              if (parseErr instanceof Error && parseErr.message !== 'Analysis streaming failed') {
+                continue;
+              }
+              throw parseErr;
+            }
+          }
+        }
       }
-      router.push(`/analysis/${data.analysis.id}`);
+
+      // If stream ended without any sections (edge case), redirect anyway
+      if (analysisId && !redirected) {
+        router.push(`/analysis/${analysisId}`);
+      }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Something went wrong');
       setIsLoading(false);
     }
@@ -69,7 +128,7 @@ export default function Dashboard() {
       <div className="max-w-4xl mx-auto px-4 py-12">
         <Card>
           <CardContent className="py-8">
-            <AnalysisLoading />
+            <AnalysisLoading completedSections={completedSections} />
           </CardContent>
         </Card>
       </div>
